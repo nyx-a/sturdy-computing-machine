@@ -3,6 +3,7 @@
   (:gen-class)
   (:require
    [clojure.string :as s]
+   [clojure.spec.alpha :as spec]
    [ragtime.jdbc   :as jdbc]
    [ragtime.repl   :as repl]
    [korma.core     :as k]
@@ -25,6 +26,9 @@
 ;;
 ;; 関数
 ;;
+
+(defn raise [s]
+  (-> s Exception. throw))
 
 (defn expand-home [s]
   (if (.startsWith s "~")
@@ -49,9 +53,21 @@
     (.getHour ldt)
     (.getMinute ldt))))
 
-(defn re-split [re string]
-  "split に使用した re それ自身も結果のベクタに含める"
-  (let [m (re-matcher re string)]
+(defmacro diplopia [& xs]
+  "物が二つにダブって見える"
+  (cons 'array-map (mapcat #(list (keyword %) %) xs)))
+
+(defn re-pull [re s]
+  "マッチした部分を抜いた元文字列も一緒に返す"
+  (let [m (re-matcher re s)]
+    (if (.find m)
+      {:matches (map #(.group m %) (-> m .groupCount inc range))
+       :other   (s/join [(subs s 0 (.start m))
+                         (subs s (.end m))])})))
+
+(defn re-split [re s]
+  "分割に使用した正規表現（にマッチした部分）も結果のベクタに含める"
+  (let [m (re-matcher re s)]
     (loop [last   0
            hit?   (.find m)
            result []]
@@ -61,14 +77,14 @@
           (recur end          ;; last
                  (.find m)    ;; hit?
                  (conj result ;; result
-                       (subs string last  start)
-                       (subs string start end))))
+                       (subs s last  start)
+                       (subs s start end))))
         (conj result
-              (subs string last))))))
+              (subs s last))))))
 
-(defn structuralize [string]
-  "string -> matrix"
-  (let [coll  (re-split date-pattern string)
+(defn structuralize [s]
+  "立体化"
+  (let [coll  (re-split date-pattern s)
         first (first coll)
         rest  (rest coll)]
 
@@ -76,9 +92,60 @@
     (if (re-find #"\S" first)
       (-> "there is a some string before first timestamp" Exception. throw))
 
-    ;; 立体化
     (for [[time text] (partition 2 rest)]
       [(s-to-ldt time) (s/trim text)])))
+
+;;
+;; 日付時刻の指定をできるだけ解釈しようとする
+;;
+
+(def p-year  #"\b(\d{4})\b")
+(def p-month #"\b(0?[1-9]|1[0-2])\b")
+(def p-day   #"\b(0?[1-9]|[12][0-9]|3[01])\b")
+(def p-24    #"\b([01]?[0-9]|2[0-3])\b")
+(def p-60    #"\b([0-5]?[0-9])\b")
+(def p-md    (re-pattern (apply format "%s\\s*[/-]\\s*%s" [p-month p-day])))
+(def p-hms   (re-pattern (apply format "%s\\s*:\\s*%s(?:\\s*:\\s*%s)?" [p-24 p-60 p-60])))
+
+(defn- ymdhm-puller
+  "for trampoline"
+  ([rest]
+   #(ymdhm-puller rest {}))
+  ([rest {:keys [year month day hour minute]}]
+   (or
+    ;; 月日らしきものがある
+    (when-let [r (re-pull p-md rest)]
+      (assert (nil? month) "something that looked like \"month\" came up twice")
+      (assert (nil? day) "something that looked like \"day\" came up twice")
+      #(ymdhm-puller
+        (r :other)
+        (assoc (diplopia year hour minute)
+               :month (-> r :matches (nth 1) Integer/parseInt)
+               :day   (-> r :matches (nth 2) Integer/parseInt))))
+
+    ;; 時分秒らしきものがある
+    (when-let [r (re-pull p-hms rest)]
+      (assert (nil? hour) "something that looked like \"hour\" came up twice")
+      (assert (nil? minute) "something that looked like \"minute\" came up twice")
+      #(ymdhm-puller
+        (r :other)
+        (assoc (diplopia year month day)
+               :hour   (-> r :matches (nth 1) Integer/parseInt)
+               :minute (-> r :matches (nth 2) Integer/parseInt))))
+
+    ;; 年らしきものがある
+    (when-let [r (re-pull p-year rest)]
+      (assert (nil? year) "something that looked like \"year\" came up twice")
+      #(ymdhm-puller
+        (r :other)
+        (assoc (diplopia month day hour minute)
+               :year (-> r :matches (nth 1) Integer/parseInt))))
+
+    ;; もう何もなさそうだ
+    (diplopia year month day hour minute rest))))
+
+(defn parse-ymdhm [s]
+  (trampoline ymdhm-puller s))
 
 ;;
 ;; migration
