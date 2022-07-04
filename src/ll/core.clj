@@ -53,8 +53,11 @@
     (.getHour ldt)
     (.getMinute ldt))))
 
+(defmacro assert-nil [sym]
+  `(assert (nil? ~sym) ~(s/join ["'" sym "' is already there."])))
+
 (defmacro diplopia [& xs]
-  "物が二つにダブって見える"
+  "[foo bar baz] --> {:foo foo , :bar bar , :baz baz}"
   (cons 'array-map (mapcat #(list (keyword %) %) xs)))
 
 (defn re-pull [re s]
@@ -108,15 +111,15 @@
 (def p-hms   (re-pattern (apply format "%s\\s*:\\s*%s(?:\\s*:\\s*%s)?" [p-24 p-60 p-60])))
 
 (defn- ymdhm-puller
-  "for trampoline"
+  "for use on trampoline"
   ([rest]
    #(ymdhm-puller rest {}))
   ([rest {:keys [year month day hour minute]}]
    (or
     ;; 月日らしきものがある
     (when-let [r (re-pull p-md rest)]
-      (assert (nil? month) "something that looked like \"month\" came up twice")
-      (assert (nil? day) "something that looked like \"day\" came up twice")
+      (assert-nil month)
+      (assert-nil day)
       #(ymdhm-puller
         (r :other)
         (assoc (diplopia year hour minute)
@@ -125,8 +128,8 @@
 
     ;; 時分秒らしきものがある
     (when-let [r (re-pull p-hms rest)]
-      (assert (nil? hour) "something that looked like \"hour\" came up twice")
-      (assert (nil? minute) "something that looked like \"minute\" came up twice")
+      (assert-nil hour)
+      (assert-nil minute)
       #(ymdhm-puller
         (r :other)
         (assoc (diplopia year month day)
@@ -135,7 +138,7 @@
 
     ;; 年らしきものがある
     (when-let [r (re-pull p-year rest)]
-      (assert (nil? year) "something that looked like \"year\" came up twice")
+      (assert-nil year)
       #(ymdhm-puller
         (r :other)
         (assoc (diplopia month day hour minute)
