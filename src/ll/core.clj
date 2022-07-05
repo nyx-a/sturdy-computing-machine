@@ -30,6 +30,9 @@
 (defn raise [s]
   (-> s Exception. throw))
 
+(defn re-comp [fmt & xs]
+  (re-pattern (apply format fmt xs)))
+
 (defn expand-home [s]
   (if (.startsWith s "~")
     (s/replace-first s "~" (System/getProperty "user.home"))
@@ -54,19 +57,19 @@
     (.getMinute ldt))))
 
 (defmacro assert-nil [sym]
-  `(assert (nil? ~sym) ~(s/join ["'" sym "' is already there."])))
+  `(assert (nil? ~sym) ~(s/join ["\"" sym "\" is already there."])))
 
 (defmacro diplopia [& xs]
   "[foo bar baz] --> {:foo foo , :bar bar , :baz baz}"
   (cons 'array-map (mapcat #(list (keyword %) %) xs)))
 
-(defn re-pull [re s]
-  "マッチした部分を抜いた元文字列も一緒に返す"
+(defn re-pull [re s & capture-names]
+  "1. マッチした部分の前と後を繋げて返す
+   2. 名前付きキャプチャのうち指定されたもののみをマップに入れて返す"
   (let [m (re-matcher re s)]
     (if (.find m)
-      {:matches (map #(.group m %) (-> m .groupCount inc range))
-       :other   (s/join [(subs s 0 (.start m))
-                         (subs s (.end m))])})))
+      [(s/join [(subs s 0 (.start m)) (subs s (.end m))]) ;; 左+右
+       (into {} (map #(vector (keyword %) (.group m (name %))) capture-names))])))
 
 (defn re-split [re s]
   "分割に使用した正規表現（にマッチした部分）も結果のベクタに含める"
@@ -102,53 +105,50 @@
 ;; 日付時刻の指定をできるだけ解釈しようとする
 ;;
 
-(def p-year  #"\b(\d{4})\b")
-(def p-month #"\b(0?[1-9]|1[0-2])\b")
-(def p-day   #"\b(0?[1-9]|[12][0-9]|3[01])\b")
-(def p-24    #"\b([01]?[0-9]|2[0-3])\b")
-(def p-60    #"\b([0-5]?[0-9])\b")
-(def p-md    (re-pattern (apply format "%s\\s*[/-]\\s*%s" [p-month p-day])))
-(def p-hms   (re-pattern (apply format "%s\\s*:\\s*%s(?:\\s*:\\s*%s)?" [p-24 p-60 p-60])))
+(def p-year   #"\b(?<year>\d{4})\b")
+(def p-month  #"\b(?<month>0?[1-9]|1[0-2])\b")
+(def p-day    #"\b(?<day>0?[1-9]|[12][0-9]|3[01])\b")
+(def p-hour   #"\b(?<hour>[01]?[0-9]|2[0-3])\b")
+(def p-minute #"\b(?<minute>[0-5]?[0-9])\b")
+(def p-second #"\b(?<second>[0-5]?[0-9])\b") ;; グループ名だけ違う
 
-(defn- ymdhm-puller
+(def p-md  (re-comp "%s\\s*[/-]\\s*%s" p-month p-day))
+(def p-hms (re-comp "%s\\s*:\\s*%s(?:\\s*:\\s*%s)?" p-hour p-minute p-second))
+
+(defn- ymdhms-puller
   "for use on trampoline"
   ([rest]
-   #(ymdhm-puller rest {}))
+   #(ymdhms-puller rest {}))
   ([rest {:keys [year month day hour minute]}]
-   (or
-    ;; 月日らしきものがある
-    (when-let [r (re-pull p-md rest)]
-      (assert-nil month)
-      (assert-nil day)
-      #(ymdhm-puller
-        (r :other)
-        (assoc (diplopia year hour minute)
-               :month (-> r :matches (nth 1) Integer/parseInt)
-               :day   (-> r :matches (nth 2) Integer/parseInt))))
+   ;; 内側のletで同名シンボルを隠したいけど外側の同名シンボルにアクセスもしたい
+   (let [_year   year
+         _month  month
+         _day    day
+         _hour   hour
+         _minute minute]
+     (or
+      ;; 月日らしきものがある
+      (when-let [[rest {:keys [month day]}] (re-pull p-md rest :month :day)]
+        (assert-nil _month)
+        (assert-nil _day)
+        #(ymdhms-puller rest (diplopia year month day hour minute)))
 
-    ;; 時分秒らしきものがある
-    (when-let [r (re-pull p-hms rest)]
-      (assert-nil hour)
-      (assert-nil minute)
-      #(ymdhm-puller
-        (r :other)
-        (assoc (diplopia year month day)
-               :hour   (-> r :matches (nth 1) Integer/parseInt)
-               :minute (-> r :matches (nth 2) Integer/parseInt))))
+      ;; 時分(秒)らしきものがある
+      (when-let [[rest {:keys [hour minute]}] (re-pull p-hms rest :hour :minute)]
+        (assert-nil _hour)
+        (assert-nil _minute)
+        #(ymdhms-puller rest (diplopia year month day hour minute)))
 
-    ;; 年らしきものがある
-    (when-let [r (re-pull p-year rest)]
-      (assert-nil year)
-      #(ymdhm-puller
-        (r :other)
-        (assoc (diplopia month day hour minute)
-               :year (-> r :matches (nth 1) Integer/parseInt))))
+      ;; 年らしきものがある
+      (when-let [[rest {:keys [year]}] (re-pull p-year rest :year)]
+        (assert-nil _year)
+        #(ymdhms-puller rest (diplopia year month day hour minute)))
 
-    ;; もう何もなさそうだ
-    (diplopia year month day hour minute rest))))
+      ;; もう何もなさそうだ
+      (diplopia year month day hour minute rest)))))
 
 (defn parse-ymdhm [s]
-  (trampoline ymdhm-puller s))
+  (trampoline ymdhms-puller s))
 
 ;;
 ;; migration
