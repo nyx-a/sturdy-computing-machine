@@ -2,24 +2,27 @@
 (ns ll.core
   (:gen-class)
   (:require
-   [clojure.string :as s]
+   [clojure.java.io    :as io]
+   [clojure.string     :as s]
    [clojure.spec.alpha :as spec]
-   [ragtime.jdbc   :as jdbc]
-   [ragtime.repl   :as repl]
-   [korma.core     :as k]
-   [korma.db       :as db]
-   [ll.datetime    :refer :all])
+   [ragtime.jdbc       :as jdbc]
+   [ragtime.repl       :as repl]
+   [korma.core         :as k]
+   [korma.db           :as db]
+   [ll.datetime        :refer :all])
   (:import
-   [java.time LocalDateTime]
+   [java.nio.file    FileSystem FileSystems]
+   [java.io          File]
+   [java.time        LocalDateTime]
    [java.time.format DateTimeFormatter]
-   [org.sqlite SQLiteException SQLiteErrorCode]))
+   [org.sqlite       SQLiteException SQLiteErrorCode]))
 
 ;;
 ;; 定数
 ;;
 
-(def default-target
-  "~/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/lifelog.txt")
+(def default-dir "~/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents")
+(def default-patt "lifelog*.txt")
 (def db-file "resources/db.sqlite3")
 (def formatter (DateTimeFormatter/ofPattern "YYYY-MM-dd HH:mm"))
 (def date-pattern #"(?m)^\s*\[(\d+)\s+(\d+)/(\d+)\s+(\d+):(\d+)\]")
@@ -32,6 +35,16 @@
   (if (.startsWith s "~")
     (s/replace-first s "~" (System/getProperty "user.home"))
     s))
+
+(defn glob [dir patt]
+  (let [dir  (io/as-file (expand-home dir)) ;; java.io.File
+        patt (str "glob:" (.getPath (io/file dir patt)))
+        m    (. (FileSystems/getDefault) (getPathMatcher patt))]
+    (map
+     str
+     (filter
+      #(.matches m (.toPath %))
+      (file-seq dir)))))
 
 (defn s-to-ldt [s]
   (let [[Y M D h m] (map #(Integer/parseInt %) (re-seq #"\d+" s))]
@@ -106,8 +119,10 @@
   (k/pk :id)
   (k/database mydatabase))
 
-(defn matrix [path]
-  (-> path expand-home str slurp structuralize))
+(defn matrix [dir patt]
+  (sort (mapcat
+         #(-> % slurp structuralize)
+         (glob dir patt))))
 
 ;;
 ;; main
@@ -115,9 +130,9 @@
 
 (defn import-data
   ([]
-   (import-data default-target))
-  ([filename]
-   (doseq [[ldt text] (matrix filename)]
+   (import-data default-dir default-patt))
+  ([dir patt]
+   (doseq [[ldt text] (matrix dir patt)]
      (print (ldt-to-s ldt))
      (try
        (k/insert lifelog (k/values {:date (sqlite-ymdhm-utc ldt) :text text}))
