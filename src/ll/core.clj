@@ -22,10 +22,11 @@
 ;;
 
 (def default-dir "~/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents")
-(def default-patt "lifelog*.txt")
+(def default-files "lifelog*.txt")
+(def default-date-pattern #"(?m)^\s*\[\s*(\d+)\s+(\d+)/(\d+)\D+(\d+):(\d+)\s*\]")
+
 (def db-file "resources/db.sqlite3")
 (def formatter (DateTimeFormatter/ofPattern "YYYY-MM-dd HH:mm"))
-(def date-pattern #"(?m)^\s*\[(\d+)\s+(\d+)/(\d+)\s+(\d+):(\d+)\]")
 
 ;;
 ;; 関数
@@ -36,15 +37,15 @@
     (s/replace-first s "~" (System/getProperty "user.home"))
     s))
 
-(defn glob [dir patt]
-  (let [dir  (io/as-file (expand-home dir)) ;; java.io.File
-        patt (str "glob:" (.getPath (io/file dir patt)))
-        m    (. (FileSystems/getDefault) (getPathMatcher patt))]
+(defn glob [d f]
+  (let [d (io/as-file (expand-home d)) ;; java.io.File
+        f (str "glob:" (.getPath (io/file d f)))
+        m (. (FileSystems/getDefault) (getPathMatcher f))]
     (map
      str
      (filter
       #(.matches m (.toPath %))
-      (file-seq dir)))))
+      (file-seq d)))))
 
 (defn s-to-ldt [s]
   (let [[Y M D h m] (map #(Integer/parseInt %) (re-seq #"\d+" s))]
@@ -52,6 +53,11 @@
 
 (defn ldt-to-s [ldt]
   (.format ldt formatter))
+
+(defn head [n s]
+  (s/join (concat
+           (take n s)
+           (if (< n (count s)) ".."))))
 
 (defn sqlite-ymdhm-utc [ldt]
   "korma で sqlite に UTC 時刻を格納するための専用関数 ( ldt はローカル時刻 )"
@@ -81,8 +87,7 @@
         (conj result
               (subs s last))))))
 
-(defn structuralize [s]
-  "立体化"
+(defn structuralize [s date-pattern]
   (let [coll  (re-split date-pattern s)
         first (first coll)
         rest  (rest coll)]
@@ -93,6 +98,13 @@
 
     (for [[time text] (partition 2 rest)]
       [(s-to-ldt time) (s/trim text)])))
+
+(defn matrix
+  [d f dp]
+  (sort
+   (mapcat
+    #(-> % slurp (structuralize dp))
+    (glob d f))))
 
 ;;
 ;; migration
@@ -119,28 +131,29 @@
   (k/pk :id)
   (k/database mydatabase))
 
-(defn matrix [dir patt]
-  (sort (mapcat
-         #(-> % slurp structuralize)
-         (glob dir patt))))
+(defn save [matrix]
+  (doseq [[ldt text] matrix]
+    (try
+      (k/insert lifelog (k/values {:date (sqlite-ymdhm-utc ldt) :text text}))
+      (println (ldt-to-s ldt) (head 10 text))
+      (catch SQLiteException e
+        (if (not= (.getResultCode e) SQLiteErrorCode/SQLITE_CONSTRAINT_UNIQUE)
+          (throw e))))))
 
 ;;
 ;; main
 ;;
 
 (defn import-data
-  ([]
-   (import-data default-dir default-patt))
-  ([dir patt]
-   (doseq [[ldt text] (matrix dir patt)]
-     (print (ldt-to-s ldt))
-     (try
-       (k/insert lifelog (k/values {:date (sqlite-ymdhm-utc ldt) :text text}))
-       (catch SQLiteException e
-         (if (= (.getResultCode e) SQLiteErrorCode/SQLITE_CONSTRAINT_UNIQUE)
-           (print " already exists")
-           (throw e))))
-     (println))))
+  ([]       (save (matrix default-dir default-files default-date-pattern)))
+  ([d f]    (save (matrix d f default-date-pattern)))
+  ([d f dp] (save (matrix d f dp))))
+
+(defn export-data []
+  (k/select lifelog
+            (k/fields (k/raw "datetime(`date`, 'localtime') as lt")
+                      :text)
+            (k/order :date)))
 
 (defn -main [& args]
   (apply import-data args))
