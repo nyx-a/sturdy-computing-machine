@@ -28,6 +28,8 @@
 (def db-file "resources/db.sqlite3")
 (def formatter (DateTimeFormatter/ofPattern "YYYY-MM-dd HH:mm"))
 
+(def preview-width 20)
+
 ;;
 ;; 関数
 ;;
@@ -99,8 +101,7 @@
     (for [[time text] (partition 2 rest)]
       [(s-to-ldt time) (s/trim text)])))
 
-(defn matrix
-  [d f dp]
+(defn matrix [d f dp]
   (sort
    (mapcat
     #(-> % slurp (structuralize dp))
@@ -131,29 +132,34 @@
   (k/pk :id)
   (k/database mydatabase))
 
-(defn save [matrix]
+(defn save-db [matrix]
   (doseq [[ldt text] matrix]
     (try
       (k/insert lifelog (k/values {:date (sqlite-ymdhm-utc ldt) :text text}))
-      (println (ldt-to-s ldt) (head 10 text))
+      (println (ldt-to-s ldt) (head preview-width text))
       (catch SQLiteException e
         (if (not= (.getResultCode e) SQLiteErrorCode/SQLITE_CONSTRAINT_UNIQUE)
           (throw e))))))
+
+(defn load-db []
+  (k/select lifelog
+            (k/fields
+             (k/raw "datetime(`date`, 'localtime') as lt")
+             :text)
+            (k/order :date)))
 
 ;;
 ;; main
 ;;
 
 (defn import-data
-  ([]       (save (matrix default-dir default-files default-date-pattern)))
-  ([d f]    (save (matrix d f default-date-pattern)))
-  ([d f dp] (save (matrix d f dp))))
+  ([]       (save-db (matrix default-dir default-files default-date-pattern)))
+  ([d f]    (save-db (matrix d f default-date-pattern)))
+  ([d f dp] (save-db (matrix d f dp))))
 
 (defn export-data []
-  (k/select lifelog
-            (k/fields (k/raw "datetime(`date`, 'localtime') as lt")
-                      :text)
-            (k/order :date)))
+  (doseq [{:keys [lt text]} (load-db)]
+    (println lt text)))
 
 (defn -main [& args]
   (apply import-data args))

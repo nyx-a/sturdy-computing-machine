@@ -15,7 +15,8 @@
   :repl-options {:init-ns ll.core}
   :aliases {"migrate"  ["run" "-m" "ll.core/migrate"]
             "rollback" ["run" "-m" "ll.core/rollback"]
-            "import"   ["run" "-m" "ll.core/import-data"]}
+            "import"   ["run" "-m" "ll.core/import-data"]
+            "export"   ["run" "-m" "ll.core/export-data"]}
   :main ll.core
   :aot [ll.core])
 
